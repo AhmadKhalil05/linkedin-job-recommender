@@ -4,4 +4,4 @@ LinkedIn job searches are flooded with reposts, duplicates, and irrelevant roles
 
 ## 🏗️ System Architecture
 
-![System Architecture](arch.png)
+![System Architecture](arch.gif)

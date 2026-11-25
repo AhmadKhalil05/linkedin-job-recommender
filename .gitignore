@@ -1,0 +1,41 @@
+# Operating System files (macOS)
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Python & Virtual Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Scraper Data Output (Raw scraped data)
+scraper/data/*
+!scraper/data/.gitkeep
+
+# Scala & sbt Build Artifacts
+target/
+project/target/
+project/project/
+.bsp/
+.bloop/
+.metals/
+
+# IDEs & Editors (IntelliJ, VS Code)
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+
+# Logs
+*.log

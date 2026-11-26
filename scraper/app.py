@@ -79,10 +79,10 @@ with st.sidebar:
             )
             interval = st.number_input(
                 "Pause between requests (seconds)",
-                60,
+                10,
                 86400,
                 settings["interval_seconds"],
-                step=30,
+                step=10,
                 disabled=current["alive"],
                 key="interval",
             )

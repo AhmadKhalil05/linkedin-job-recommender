@@ -18,7 +18,7 @@ from storage import Store, utc_now
 ROOT = Path(__file__).resolve().parent
 DEFAULTS = {
     "mode": "live", "keywords": ["Data Engineer", "Software Engineer", "Machine Learning Engineer"],
-    "locations": ["United States"], "batch_size": 25, "interval_seconds": 120,
+    "locations": ["United States"], "batch_size": 10, "interval_seconds": 60,
     "hours_old": 168, "fetch_description": False, "pages_per_query": 20,
     "replay_path": str(ROOT / "data" / "jobs.jsonl"), "replay_rate": 250,
     "replay_repeat": True,
@@ -63,7 +63,7 @@ def validate_config(config):
         raise ValueError("Enter at least one keyword and one location.")
     if len(config["keywords"]) * len(config["locations"]) > 100:
         raise ValueError("Use at most 100 keyword/location combinations per collection plan.")
-    for name, low, high in [("batch_size", 1, 25), ("interval_seconds", 60, 86400),
+    for name, low, high in [("batch_size", 1, 25), ("interval_seconds", 10, 86400),
                             ("hours_old", 1, 720), ("pages_per_query", 1, 40),
                             ("replay_rate", 1, 5000)]:
         config[name] = int(config[name])

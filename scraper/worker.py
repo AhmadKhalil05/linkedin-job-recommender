@@ -15,6 +15,7 @@ import time
 
 from collector import ROOT, file_fingerprint, get_config, migrate_legacy, validate_config, worker_lock
 from storage import Store, compact, utc_now
+from rate_control import AdaptiveRate, next_offset, record_observation
 
 
 class StopRequested(Exception):
@@ -105,53 +106,78 @@ class Worker:
         combinations = list(itertools.product(config["keywords"], config["locations"]))
         rotation_key = "rotation:" + hashlib.sha256(compact(combinations).encode()).hexdigest()[:20]
         rotation = int(self.store.get_meta(rotation_key, 0))
-        failures = 0
+        policy = AdaptiveRate(self.store, config["interval_seconds"])
+        page_limit = min(10, config["batch_size"])
         while True:
             self.check_stop()
-            remaining = float(self.store.get_meta("source_cooldown_until", 0)) - time.time()
+            cooldown = float(self.store.get_meta("source_cooldown_until", 0))
+            next_allowed = float(self.store.get_meta("live_next_allowed_at", 0))
+            remaining = max(cooldown, next_allowed) - time.time()
             if remaining > 0:
-                self.update(status="backoff", message="Resuming the saved source cooldown")
+                self.update(status="backoff" if cooldown > time.time() else "waiting",
+                    message="Respecting the saved source schedule", adaptive_interval_seconds=policy.interval)
                 self.pause(remaining)
             keyword, location = combinations[rotation % len(combinations)]
             cursor_key = "query:" + hashlib.sha256(compact([keyword, location, config["hours_old"], config["batch_size"]]).encode()).hexdigest()[:24]
             offset = int(self.store.get_meta(cursor_key, 0))
             self.update(status="collecting", keyword=keyword, location=location, offset=offset,
-                        next_run_at=None, message=f"Collecting {keyword} · {location}")
+                        next_run_at=None, adaptive_interval_seconds=policy.interval,
+                        message=f"Collecting {keyword} · {location} · up to {page_limit} jobs")
             started = time.monotonic()
+            started_at = time.time()
+            response, result = None, {"events":0,"new_jobs":0,"duplicates":0}
+            source_error = None
+            # This survives Stop/Start even if the child is cancelled before producing a response.
+            self.store.set_meta("live_next_allowed_at", time.time() + policy.interval)
             try:
-                response = self.request({**config, "keyword": keyword, "location": location, "offset": offset})
+                response = self.request({**config, "batch_size":page_limit, "keyword":keyword,
+                                         "location":location, "offset":offset})
                 records = response.get("records", [])
-                next_offset = offset + config["batch_size"] if len(records) >= config["batch_size"] else 0
-                if next_offset >= config["pages_per_query"] * config["batch_size"]:
-                    next_offset = 0
+                following_offset = next_offset(offset, response, page_limit, config["pages_per_query"])
                 result = self.accept(records, "live", label=f"{keyword} · {location}",
-                    duration=time.monotonic() - started, checkpoint=(cursor_key, next_offset))
-                rotation += 1
-                self.store.set_meta(rotation_key, rotation)
-                self.store.log("INFO", f"{keyword} / {location}: {result['events']} events, {result['new_jobs']} new unique jobs.")
+                    duration=time.monotonic() - started, checkpoint=(cursor_key, following_offset))
+                calls = response.get("http_calls", "unknown")
+                self.store.log("INFO", f"{keyword} / {location}: {result['events']} events, {result['new_jobs']} new unique jobs; HTTP calls={calls}; offset {offset} → {following_offset}.")
                 if response.get("rate_limited"):
-                    failures += 1
-                    delay = min(3600, 300 * 2 ** min(failures - 1, 4)) + random.uniform(0, 15)
-                    self.store.set_meta("source_cooldown_until", time.time() + delay)
-                    self.store.log("WARNING", f"LinkedIn returned 429. Cooling down for {int(delay)} seconds.")
-                    self.update(status="backoff", message="Source rate limit · waiting before the next request")
+                    delay = policy.rate_limited(response.get("retry_after_seconds",0))
+                    self.store.log("WARNING", f"Observed 429; respecting Retry-After when supplied. Cooldown={int(delay)}s; adaptive interval={int(policy.interval)}s.")
+                    self.update(status="backoff", message=f"Source rate limit · interval raised to {int(policy.interval)}s")
                 elif response.get("errors"):
-                    raise RuntimeError(compact(response["errors"]))
+                    source_error = compact(response["errors"])
+                    delay = policy.failed()
+                    self.store.log("ERROR", f"Source error: {source_error}. Retry in {int(delay)} seconds.")
+                    self.update(status="backoff", message="Source error · saved progress will be retried")
                 else:
-                    failures = 0
-                    delay = config["interval_seconds"]
+                    delay = policy.succeeded()
+                    rotation += 1
+                    self.store.set_meta(rotation_key, rotation)
                     for source, warnings in response.get("warnings", {}).items():
                         self.store.log("WARNING", f"{source}: {warnings}")
-                    self.update(status="waiting", message="Batch saved · waiting for the next query")
+                    self.update(status="waiting", message=f"Batch saved · adaptive interval {int(policy.interval)}s")
             except StopRequested:
                 raise
             except OSError:
                 raise
             except Exception as error:
-                failures += 1
-                delay = min(3600, max(120, config["interval_seconds"]) * 2 ** min(failures - 1, 4))
+                source_error = str(error)
+                delay = policy.failed()
                 self.store.log("ERROR", f"Source request failed: {error}. Retry in {int(delay)} seconds.")
                 self.update(status="backoff", message="Source unavailable · retry scheduled", last_error=str(error))
+            delay += random.uniform(0, min(30, delay * 0.1))
+            self.store.set_meta("live_next_allowed_at", time.time() + delay)
+            if response and response.get("rate_limited"):
+                self.store.set_meta("source_cooldown_until", time.time() + delay)
+            self.update(adaptive_interval_seconds=policy.interval,
+                        last_http_calls=response.get("http_calls") if response else None)
+            record_observation(self.store, {
+                "started_at":started_at,"ended_at":time.time(),"run_id":self.run_id,
+                "keyword":keyword,"location":location,"offset":offset,
+                "effective_batch_size":page_limit,"http_calls":response.get("http_calls") if response else None,
+                "http_429":response.get("http_429",0) if response else None,
+                "rate_limited":bool(response and response.get("rate_limited")),
+                "source_error":source_error,"new_jobs":result["new_jobs"],"events":result["events"],
+                "interval_seconds":policy.interval,"next_delay_seconds":delay,
+            })
             self.pause(delay)
 
     def replay(self, config):

@@ -1,4 +1,4 @@
-# Operating System files (macOS)
+# Operating System files (macOS & Windows)
 .DS_Store
 .DS_Store?
 ._*
@@ -11,16 +11,35 @@ Thumbs.db
 .venv/
 venv/
 env/
+ENV/
 __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
 dist/
 build/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Scraper Data Output (Raw scraped data)
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Streamlit Cache
+.streamlit/cache/
+
+# Scraper Data Outputs & Database
 scraper/data/*
 !scraper/data/.gitkeep
+*.jsonl
+*.csv
+*.sqlite3
+*.sqlite
+*.db
+*.lock
 
 # Scala & sbt Build Artifacts
 target/
